@@ -1,0 +1,26 @@
+[package]
+name = "human-bandwidth"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "A library for representing bandwidth speed in a human-readable format."
+readme = "README.md"
+homepage = "https://github.com/stack-rs/human-bandwidth"
+repository = "https://github.com/stack-rs/human-bandwidth"
+keywords = ["bandwidth", "data-structures", "network", "human", "serde"]
+documentation = "https://docs.rs/human-bandwidth"
+categories = ["network-programming", "data-structures"]
+rust-version = "1.60"
+
+[dependencies]
+bandwidth = { version = "0.3.0" }
+serde = { version = "1.0.130", optional = true }
+
+[dev-dependencies]
+serde_json = "1.0"
+
+[features]
+serde = ["bandwidth/serde", "serde/derive", "dep:serde"]
+
+[package.metadata.docs.rs]
+all-features = true
