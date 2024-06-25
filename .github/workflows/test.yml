@@ -1,0 +1,18 @@
+name: Test
+
+on:
+  push:
+# Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  test-all-features:
+    name: cargo test with all features
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+      - run: cargo nextest run --profile ci --all-features --release
