@@ -26,14 +26,10 @@ body = """
 {% endmacro -%}
 
 {% if version %}\
-    {% if previous.version %}\
-        ## [{{ version | trim_start_matches(pat="v") }}]\
-          ({{ self::remote_url() }}/compare/{{ previous.version }}..{{ version }}) - {{ timestamp | date(format="%Y-%m-%d") }}
-    {% else %}\
-        ## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
-    {% endif %}\
+    ## [{{ version }}]\
+          ({{ self::remote_url() }}/compare/releases/tag/{{ version }}) - {{ timestamp | date(format="%Y-%m-%d") }}
 {% else %}\
-    ## [unreleased]
+    ## [Unreleased]
 {% endif %}\
 
 {% for group, commits in commits | filter(attribute="merge_commit", value=false) | unique(attribute="message") | group_by(attribute="group") %}
@@ -90,6 +86,7 @@ commit_parsers = [
   { message = "^chore\\(deps.*\\)", skip = true },
   { message = "^chore\\(pr\\)", skip = true },
   { message = "^chore\\(pull\\)", skip = true },
+  { message = "^chore: release.*", skip = true },
   { message = "^chore|^ci", group = "<!-- 7 -->Miscellaneous Tasks" },
   { body = ".*security", group = "<!-- 8 -->Security" },
   { message = "^revert", group = "<!-- 9 -->Revert" },
