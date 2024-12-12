@@ -102,7 +102,7 @@ impl<'de> Deserialize<'de> for Serde<Bandwidth> {
     {
         struct V;
 
-        impl<'de2> de::Visitor<'de2> for V {
+        impl de::Visitor<'_> for V {
             type Value = Bandwidth;
 
             fn expecting(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
@@ -134,7 +134,7 @@ impl<'de> Deserialize<'de> for Serde<Option<Bandwidth>> {
     }
 }
 
-impl<'a> ser::Serialize for Serde<&'a Bandwidth> {
+impl ser::Serialize for Serde<&Bandwidth> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: ser::Serializer,
@@ -156,7 +156,7 @@ impl ser::Serialize for Serde<Bandwidth> {
     }
 }
 
-impl<'a> ser::Serialize for Serde<&'a Option<Bandwidth>> {
+impl ser::Serialize for Serde<&Option<Bandwidth>> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: ser::Serializer,
