@@ -23,6 +23,8 @@ pub mod re {
 
 use bandwidth::Bandwidth;
 
+const FRACTION_PART_LIMIT: u32 = 12;
+
 /// Error parsing human-friendly bandwidth
 #[derive(Debug, PartialEq, Clone)]
 pub enum Error {
@@ -112,6 +114,14 @@ impl OverflowOp for u64 {
     }
 }
 
+fn parse_fraction(fraction: u64, fraction_cnt: u32, need_digit: u32) -> u64 {
+    if need_digit >= fraction_cnt {
+        fraction * 10u64.pow(need_digit - fraction_cnt)
+    } else {
+        fraction / 10u64.pow(fraction_cnt - need_digit)
+    }
+}
+
 struct Parser<'a> {
     iter: Chars<'a>,
     src: &'a str,
@@ -138,13 +148,34 @@ impl Parser<'_> {
         }
         Ok(None)
     }
-    fn parse_unit(&mut self, n: u64, start: usize, end: usize) -> Result<(), Error> {
+
+    fn parse_unit(
+        &mut self,
+        n: u64,
+        fraction: u64,
+        fraction_cnt: u32,
+        start: usize,
+        end: usize,
+    ) -> Result<(), Error> {
         let (mut gbps, bps) = match &self.src[start..end] {
             "bps" | "bit/s" | "b/s" => (0u64, n),
-            "kbps" | "Kbps" | "kbit/s" | "Kbit/s" | "kb/s" | "Kb/s" => (0u64, n.mul(1000)?),
-            "Mbps" | "mbps" | "Mbit/s" | "mbit/s" | "Mb/s" | "mb/s" => (0u64, n.mul(1_000_000)?),
-            "Gbps" | "gbps" | "Gbit/s" | "gbit/s" | "Gb/s" | "gb/s" => (n, 0),
-            "Tbps" | "tbps" | "Tbit/s" | "tbit/s" | "Tb/s" | "tb/s" => (n.mul(1000)?, 0),
+            "kbps" | "Kbps" | "kbit/s" | "Kbit/s" | "kb/s" | "Kb/s" => (
+                0u64,
+                n.mul(1000)?
+                    .add(parse_fraction(fraction, fraction_cnt, 3))?,
+            ),
+            "Mbps" | "mbps" | "Mbit/s" | "mbit/s" | "Mb/s" | "mb/s" => (
+                0u64,
+                n.mul(1_000_000)?
+                    .add(parse_fraction(fraction, fraction_cnt, 6))?,
+            ),
+            "Gbps" | "gbps" | "Gbit/s" | "gbit/s" | "Gb/s" | "gb/s" => {
+                (n, parse_fraction(fraction, fraction_cnt, 9))
+            }
+            "Tbps" | "tbps" | "Tbit/s" | "tbit/s" | "Tb/s" | "tb/s" => {
+                let bps = parse_fraction(fraction, fraction_cnt, 12);
+                (n.mul(1000)?.add(bps / 1_000_000_000)?, bps % 1_000_000_000)
+            }
             _ => {
                 return Err(Error::UnknownUnit {
                     start,
@@ -166,17 +197,37 @@ impl Parser<'_> {
 
     fn parse(mut self) -> Result<Bandwidth, Error> {
         let mut n = self.parse_first_char()?.ok_or(Error::Empty)?;
+        let mut decimal = false;
+        let mut fraction: u64 = 0;
+        let mut fraction_cnt: u32 = 0;
         'outer: loop {
             let mut off = self.off();
             while let Some(c) = self.iter.next() {
                 match c {
                     '0'..='9' => {
-                        n = n
-                            .checked_mul(10)
-                            .and_then(|x| x.checked_add(c as u64 - '0' as u64))
-                            .ok_or(Error::NumberOverflow)?;
+                        if decimal {
+                            if fraction_cnt >= FRACTION_PART_LIMIT {
+                                continue;
+                            }
+                            fraction = fraction
+                                .checked_mul(10)
+                                .and_then(|x| x.checked_add(c as u64 - '0' as u64))
+                                .ok_or(Error::NumberOverflow)?;
+                            fraction_cnt += 1;
+                        } else {
+                            n = n
+                                .checked_mul(10)
+                                .and_then(|x| x.checked_add(c as u64 - '0' as u64))
+                                .ok_or(Error::NumberOverflow)?;
+                        }
                     }
                     c if c.is_whitespace() => {}
+                    '.' => {
+                        if decimal {
+                            return Err(Error::InvalidCharacter(off));
+                        }
+                        decimal = true;
+                    }
                     'a'..='z' | 'A'..='Z' | '/' => {
                         break;
                     }
@@ -191,8 +242,11 @@ impl Parser<'_> {
             while let Some(c) = self.iter.next() {
                 match c {
                     '0'..='9' => {
-                        self.parse_unit(n, start, off)?;
+                        self.parse_unit(n, fraction, fraction_cnt, start, off)?;
                         n = c as u64 - '0' as u64;
+                        fraction = 0;
+                        decimal = false;
+                        fraction_cnt = 0;
                         continue 'outer;
                     }
                     c if c.is_whitespace() => break,
@@ -203,11 +257,14 @@ impl Parser<'_> {
                 }
                 off = self.off();
             }
-            self.parse_unit(n, start, off)?;
+            self.parse_unit(n, fraction, fraction_cnt, start, off)?;
             n = match self.parse_first_char()? {
                 Some(n) => n,
                 None => return Ok(Bandwidth::new(self.current.0, self.current.1 as u32)),
             };
+            fraction = 0;
+            decimal = false;
+            fraction_cnt = 0;
         }
     }
 }
@@ -350,6 +407,100 @@ mod tests {
     }
 
     #[test]
+    fn test_decimal() {
+        assert_eq!(parse_bandwidth("1.5bps"), Ok(Bandwidth::new(0, 1)));
+        assert_eq!(parse_bandwidth("2.5bit/s"), Ok(Bandwidth::new(0, 2)));
+        assert_eq!(parse_bandwidth("15.5b/s"), Ok(Bandwidth::new(0, 15)));
+        assert_eq!(parse_bandwidth("51.6kbps"), Ok(Bandwidth::new(0, 51_600)));
+        assert_eq!(parse_bandwidth("79.78Kbps"), Ok(Bandwidth::new(0, 79_780)));
+        assert_eq!(
+            parse_bandwidth("81.923kbit/s"),
+            Ok(Bandwidth::new(0, 81_923))
+        );
+        assert_eq!(
+            parse_bandwidth("100.1234Kbit/s"),
+            Ok(Bandwidth::new(0, 100_123))
+        );
+        assert_eq!(
+            parse_bandwidth("150.12345kb/s"),
+            Ok(Bandwidth::new(0, 150_123))
+        );
+        assert_eq!(
+            parse_bandwidth("410.123456Kb/s"),
+            Ok(Bandwidth::new(0, 410_123))
+        );
+        assert_eq!(
+            parse_bandwidth("12.123Mbps"),
+            Ok(Bandwidth::new(0, 12_123_000))
+        );
+        assert_eq!(
+            parse_bandwidth("16.1234mbps"),
+            Ok(Bandwidth::new(0, 16_123_400))
+        );
+        assert_eq!(
+            parse_bandwidth("24.12345Mbit/s"),
+            Ok(Bandwidth::new(0, 24_123_450))
+        );
+        assert_eq!(
+            parse_bandwidth("36.123456mbit/s"),
+            Ok(Bandwidth::new(0, 36_123_456))
+        );
+        assert_eq!(
+            parse_bandwidth("48.123Mb/s"),
+            Ok(Bandwidth::new(0, 48_123_000))
+        );
+        assert_eq!(
+            parse_bandwidth("96.1234mb/s"),
+            Ok(Bandwidth::new(0, 96_123_400))
+        );
+        assert_eq!(
+            parse_bandwidth("2.123Gbps"),
+            Ok(Bandwidth::new(2, 123_000_000))
+        );
+        assert_eq!(
+            parse_bandwidth("4.1234gbps"),
+            Ok(Bandwidth::new(4, 123_400_000))
+        );
+        assert_eq!(
+            parse_bandwidth("6.12345Gbit/s"),
+            Ok(Bandwidth::new(6, 123_450_000))
+        );
+        assert_eq!(
+            parse_bandwidth("8.123456gbit/s"),
+            Ok(Bandwidth::new(8, 123_456_000))
+        );
+        assert_eq!(
+            parse_bandwidth("16.123456789Gb/s"),
+            Ok(Bandwidth::new(16, 123_456_789))
+        );
+        assert_eq!(
+            parse_bandwidth("40.12345678912gb/s"),
+            Ok(Bandwidth::new(40, 123_456_789))
+        );
+        assert_eq!(parse_bandwidth("1.123Tbps"), Ok(Bandwidth::new(1_123, 0)));
+        assert_eq!(
+            parse_bandwidth("2.1234tbps"),
+            Ok(Bandwidth::new(2_123, 400_000_000))
+        );
+        assert_eq!(
+            parse_bandwidth("4.12345Tbit/s"),
+            Ok(Bandwidth::new(4_123, 450_000_000))
+        );
+        assert_eq!(
+            parse_bandwidth("8.123456tbit/s"),
+            Ok(Bandwidth::new(8_123, 456_000_000))
+        );
+        assert_eq!(
+            parse_bandwidth("16.123456789Tb/s"),
+            Ok(Bandwidth::new(16_123, 456_789_000))
+        );
+        assert_eq!(
+            parse_bandwidth("32.12345678912tb/s"),
+            Ok(Bandwidth::new(32_123, 456_789_120))
+        );
+    }
+
+    #[test]
     fn test_combo() {
         assert_eq!(
             parse_bandwidth("1bps 2bit/s 3b/s"),
@@ -378,6 +529,38 @@ mod tests {
         assert_eq!(
             parse_bandwidth("36Mbps 12kbps 24bps"),
             Ok(Bandwidth::new(0, 36_012_024))
+        );
+    }
+
+    #[test]
+    fn test_decimal_combo() {
+        assert_eq!(
+            parse_bandwidth("1.1bps 2.2bit/s 3.3b/s"),
+            Ok(Bandwidth::new(0, 6))
+        );
+        assert_eq!(
+            parse_bandwidth("4.4kbps 5.5Kbps 6.6kbit/s"),
+            Ok(Bandwidth::new(0, 16_500))
+        );
+        assert_eq!(
+            parse_bandwidth("7.7Mbps 8.8mbps 9.9Mbit/s"),
+            Ok(Bandwidth::new(0, 26_400_000))
+        );
+        assert_eq!(
+            parse_bandwidth("10.10Gbps 11.11gbps 12.12Gbit/s"),
+            Ok(Bandwidth::new(33, 330_000_000))
+        );
+        assert_eq!(
+            parse_bandwidth("13.13Tbps 14.14tbps 15.15Tbit/s"),
+            Ok(Bandwidth::new(42_420, 0))
+        );
+        assert_eq!(
+            parse_bandwidth("10.1Gbps 5.2Mbps 1.3b/s"),
+            Ok(Bandwidth::new(10, 105_200_001))
+        );
+        assert_eq!(
+            parse_bandwidth("36.1Mbps 12.2kbps 24.3bps"),
+            Ok(Bandwidth::new(0, 36_112_224))
         );
     }
 
