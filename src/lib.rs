@@ -1,11 +1,14 @@
 //! Human-friendly bandwidth parser and formatter
 //!
-//! Features:
+//! ## Facilities:
 //!
-//! * Parses bandwidth in free form like `2Gbps 340Mbps`
-//! * Formats bandwidth in similar form `150kbps 24bps`
+//! * Parses bandwidth in free form like `2Gbps 340Mbps` or `2.34Gbps`
+//! * Formats bandwidth in similar form `150.024kbps` (default) or `150kbps 24bps` (with feature `display-integer` enabled)
 //!
-//! Enable `serde` feature for serde integration.
+//! ## Features
+//!
+//! * Enable `serde` feature for serde integration.
+//! * Enable `display-integer` feature to display integer values only.
 
 use std::error::Error as StdError;
 use std::fmt;
@@ -269,16 +272,19 @@ impl Parser<'_> {
     }
 }
 
-/// Parse bandwidth object `1Gbps 12Mbps 5bps`
+/// Parse bandwidth object `1Gbps 12Mbps 5bps` or `1.012000005Gbps`
 ///
 /// The bandwidth object is a concatenation of rate spans. Where each rate
-/// span is an integer number and a suffix. Supported suffixes:
+/// span is an number and a suffix. Supported suffixes:
 ///
 /// * `bps`, `bit/s`, `b/s` -- bit per second
 /// * `kbps`, `kbit/s`, `kb/s` -- kilobit per second
 /// * `Mbps`, `Mbit/s`, `Mb/s` -- megabit per second
 /// * `Gbps`, `Gbit/s`, `Gb/s` -- gigabit per second
 /// * `Tbps`, `Tbit/s`, `Tb/s` -- terabit per second
+///
+/// While the number can be integer or decimal, the fractional part less than 1bps will always be
+/// ignored.
 ///
 /// # Examples
 ///
@@ -288,6 +294,9 @@ impl Parser<'_> {
 ///
 /// assert_eq!(parse_bandwidth("9Tbps 420Gbps"), Ok(Bandwidth::new(9420, 0)));
 /// assert_eq!(parse_bandwidth("32Mbps"), Ok(Bandwidth::new(0, 32_000_000)));
+/// assert_eq!(parse_bandwidth("150.024kbps"), Ok(Bandwidth::new(0, 150_024)));
+/// // The fractional part less than 1bps will always be ignored
+/// assert_eq!(parse_bandwidth("150.02456kbps"), Ok(Bandwidth::new(0, 150_024)));
 /// ```
 pub fn parse_bandwidth(s: &str) -> Result<Bandwidth, Error> {
     Parser {
@@ -304,16 +313,32 @@ pub fn parse_bandwidth(s: &str) -> Result<Bandwidth, Error> {
 /// parse_bandwidth, but we can change some details of the exact composition
 /// of the value.
 ///
+/// By default it will format the value with the largest possible unit in decimal form.
+/// If you want to display integer values only, enable the `display-integer` feature.
+///
 /// # Examples
 ///
 /// ```
 /// use bandwidth::Bandwidth;
 /// use human_bandwidth::format_bandwidth;
 ///
+/// // Enabling the `display-integer` feature will display integer values only
+/// # #[cfg(feature = "display-integer")]
+/// # {
 /// let val1 = Bandwidth::new(9420, 0);
 /// assert_eq!(format_bandwidth(val1).to_string(), "9Tbps 420Gbps");
 /// let val2 = Bandwidth::new(0, 32_000_000);
 /// assert_eq!(format_bandwidth(val2).to_string(), "32Mbps");
+/// # }
+///
+/// // Disabling the `display-integer` feature will display decimal values
+/// # #[cfg(not(feature = "display-integer"))]
+/// # {
+/// let val1 = Bandwidth::new(9420, 0);
+/// assert_eq!(format_bandwidth(val1).to_string(), "9.42Tbps");
+/// let val2 = Bandwidth::new(0, 32_000_000);
+/// assert_eq!(format_bandwidth(val2).to_string(), "32Mbps");
+/// # }
 /// ```
 pub fn format_bandwidth(val: Bandwidth) -> FormattedBandwidth {
     FormattedBandwidth(val)
@@ -330,15 +355,38 @@ fn item(f: &mut fmt::Formatter, started: &mut bool, name: &str, value: u32) -> f
     Ok(())
 }
 
+#[derive(Copy, Clone)]
+#[repr(usize)]
+enum LargestUnit {
+    Bps = 0,
+    Kbps = 1,
+    Mbps = 2,
+    Gbps = 3,
+    Tbps = 4,
+}
+
+impl fmt::Display for LargestUnit {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            LargestUnit::Bps => f.write_str("bps"),
+            LargestUnit::Kbps => f.write_str("kbps"),
+            LargestUnit::Mbps => f.write_str("Mbps"),
+            LargestUnit::Gbps => f.write_str("Gbps"),
+            LargestUnit::Tbps => f.write_str("Tbps"),
+        }
+    }
+}
+
 impl FormattedBandwidth {
     /// Returns a reference to the [`Bandwidth`][] that is being formatted.
     pub fn get_ref(&self) -> &Bandwidth {
         &self.0
     }
-}
 
-impl fmt::Display for FormattedBandwidth {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    /// Enabling the `display-integer` feature will display integer values only
+    ///
+    /// This method is preserved for backward compatibility and custom formatting.
+    pub fn fmt_integer(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let gbps = self.0.as_gbps();
         let bps = self.0.subgbps_bps();
 
@@ -360,6 +408,85 @@ impl fmt::Display for FormattedBandwidth {
         item(f, started, "Mbps", mbps)?;
         item(f, started, "kbps", kbps)?;
         item(f, started, "bps", bps)?;
+        Ok(())
+    }
+
+    /// Disabling the `display-integer` feature will display decimal values
+    ///
+    /// This method is preserved for custom formatting.
+    pub fn fmt_decimal(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let gbps = self.0.as_gbps();
+        let bps = self.0.subgbps_bps();
+
+        if gbps == 0 && bps == 0 {
+            f.write_str("0bps")?;
+            return Ok(());
+        }
+
+        let tbps = gbps / 1_000;
+        let gbps = gbps % 1_000;
+
+        let mbps = (bps / 1_000_000) as u64;
+        let kbps = (bps / 1_000 % 1_000) as u64;
+        let bps = (bps % 1_000) as u64;
+
+        let largest_unit = if tbps > 0 {
+            LargestUnit::Tbps
+        } else if gbps > 0 {
+            LargestUnit::Gbps
+        } else if mbps > 0 {
+            LargestUnit::Mbps
+        } else if kbps > 0 {
+            LargestUnit::Kbps
+        } else {
+            LargestUnit::Bps
+        };
+
+        let values = [bps, kbps, mbps, gbps, tbps];
+        let mut index = largest_unit as usize;
+        let mut zeros = 0;
+        let mut dot = true;
+        write!(f, "{}", values[index])?;
+        loop {
+            if index == 0 {
+                write!(f, "{}", largest_unit)?;
+                break;
+            }
+            index -= 1;
+            let value = values[index];
+            if value == 0 {
+                zeros += 3;
+                continue;
+            } else {
+                if dot {
+                    f.write_str(".")?;
+                    dot = false;
+                }
+                if zeros > 0 {
+                    write!(f, "{:0width$}", 0, width = zeros)?;
+                    zeros = 0;
+                }
+                if value % 10 != 0 {
+                    write!(f, "{:03}", value)?;
+                } else if value % 100 != 0 {
+                    write!(f, "{:02}", value / 10)?;
+                    zeros += 1;
+                } else {
+                    write!(f, "{}", value / 100)?;
+                    zeros += 2;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for FormattedBandwidth {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        #[cfg(not(feature = "display-integer"))]
+        self.fmt_decimal(f)?;
+        #[cfg(feature = "display-integer")]
+        self.fmt_integer(f)?;
         Ok(())
     }
 }
@@ -606,42 +733,132 @@ mod tests {
     }
 
     #[test]
-    fn test_formatted_bandwidth() {
-        assert_eq!(format_bandwidth(Bandwidth::new(0, 0)).to_string(), "0bps");
-        assert_eq!(format_bandwidth(Bandwidth::new(0, 1)).to_string(), "1bps");
-        assert_eq!(format_bandwidth(Bandwidth::new(0, 15)).to_string(), "15bps");
+    fn test_formatted_bandwidth_integer() {
+        struct TestInteger(FormattedBandwidth);
+        impl From<FormattedBandwidth> for TestInteger {
+            fn from(fb: FormattedBandwidth) -> Self {
+                TestInteger(fb)
+            }
+        }
+        impl fmt::Display for TestInteger {
+            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                self.0.fmt_integer(f)
+            }
+        }
         assert_eq!(
-            format_bandwidth(Bandwidth::new(0, 51_000)).to_string(),
+            TestInteger::from(format_bandwidth(Bandwidth::new(0, 0))).to_string(),
+            "0bps"
+        );
+        assert_eq!(
+            TestInteger::from(format_bandwidth(Bandwidth::new(0, 1))).to_string(),
+            "1bps"
+        );
+        assert_eq!(
+            TestInteger::from(format_bandwidth(Bandwidth::new(0, 15))).to_string(),
+            "15bps"
+        );
+        assert_eq!(
+            TestInteger::from(format_bandwidth(Bandwidth::new(0, 51_000))).to_string(),
             "51kbps"
         );
         assert_eq!(
-            format_bandwidth(Bandwidth::new(0, 32_000_000)).to_string(),
+            TestInteger::from(format_bandwidth(Bandwidth::new(0, 32_000_000))).to_string(),
             "32Mbps"
         );
         assert_eq!(
-            format_bandwidth(Bandwidth::new(0, 79_000_000)).to_string(),
+            TestInteger::from(format_bandwidth(Bandwidth::new(0, 79_000_000))).to_string(),
             "79Mbps"
         );
         assert_eq!(
-            format_bandwidth(Bandwidth::new(0, 100_000_000)).to_string(),
+            TestInteger::from(format_bandwidth(Bandwidth::new(0, 100_000_000))).to_string(),
             "100Mbps"
         );
         assert_eq!(
-            format_bandwidth(Bandwidth::new(0, 150_000_000)).to_string(),
+            TestInteger::from(format_bandwidth(Bandwidth::new(0, 150_000_000))).to_string(),
             "150Mbps"
         );
         assert_eq!(
-            format_bandwidth(Bandwidth::new(0, 410_000_000)).to_string(),
+            TestInteger::from(format_bandwidth(Bandwidth::new(0, 410_000_000))).to_string(),
             "410Mbps"
         );
-        assert_eq!(format_bandwidth(Bandwidth::new(1, 0)).to_string(), "1Gbps");
         assert_eq!(
-            format_bandwidth(Bandwidth::new(4, 500_000_000)).to_string(),
+            TestInteger::from(format_bandwidth(Bandwidth::new(1, 0))).to_string(),
+            "1Gbps"
+        );
+        assert_eq!(
+            TestInteger::from(format_bandwidth(Bandwidth::new(4, 500_000_000))).to_string(),
             "4Gbps 500Mbps"
         );
         assert_eq!(
-            format_bandwidth(Bandwidth::new(9420, 0)).to_string(),
+            TestInteger::from(format_bandwidth(Bandwidth::new(9420, 0))).to_string(),
             "9Tbps 420Gbps"
+        );
+    }
+
+    #[test]
+    fn test_formatted_bandwidth_decimal() {
+        struct TestDecimal(FormattedBandwidth);
+        impl From<FormattedBandwidth> for TestDecimal {
+            fn from(fb: FormattedBandwidth) -> Self {
+                TestDecimal(fb)
+            }
+        }
+        impl fmt::Display for TestDecimal {
+            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                self.0.fmt_decimal(f)
+            }
+        }
+        assert_eq!(
+            TestDecimal::from(format_bandwidth(Bandwidth::new(0, 0))).to_string(),
+            "0bps"
+        );
+        assert_eq!(
+            TestDecimal::from(format_bandwidth(Bandwidth::new(0, 1))).to_string(),
+            "1bps"
+        );
+        assert_eq!(
+            TestDecimal::from(format_bandwidth(Bandwidth::new(0, 15))).to_string(),
+            "15bps"
+        );
+        assert_eq!(
+            TestDecimal::from(format_bandwidth(Bandwidth::new(0, 51_200))).to_string(),
+            "51.2kbps"
+        );
+        assert_eq!(
+            TestDecimal::from(format_bandwidth(Bandwidth::new(0, 32_300_400))).to_string(),
+            "32.3004Mbps"
+        );
+        assert_eq!(
+            TestDecimal::from(format_bandwidth(Bandwidth::new(0, 79_000_050))).to_string(),
+            "79.00005Mbps"
+        );
+        assert_eq!(
+            TestDecimal::from(format_bandwidth(Bandwidth::new(0, 100_060_007))).to_string(),
+            "100.060007Mbps"
+        );
+        assert_eq!(
+            TestDecimal::from(format_bandwidth(Bandwidth::new(0, 150_000_000))).to_string(),
+            "150Mbps"
+        );
+        assert_eq!(
+            TestDecimal::from(format_bandwidth(Bandwidth::new(0, 410_008_900))).to_string(),
+            "410.0089Mbps"
+        );
+        assert_eq!(
+            TestDecimal::from(format_bandwidth(Bandwidth::new(1, 0))).to_string(),
+            "1Gbps"
+        );
+        assert_eq!(
+            TestDecimal::from(format_bandwidth(Bandwidth::new(4, 500_000_000))).to_string(),
+            "4.5Gbps"
+        );
+        assert_eq!(
+            TestDecimal::from(format_bandwidth(Bandwidth::new(8700, 32_000_000))).to_string(),
+            "8.700032Tbps"
+        );
+        assert_eq!(
+            "9.42Tbps",
+            TestDecimal::from(format_bandwidth(Bandwidth::new(9420, 0))).to_string(),
         );
     }
 }
