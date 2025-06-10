@@ -9,11 +9,14 @@
 //!
 //! * Enable `serde` feature for serde integration.
 //! * Enable `display-integer` feature to display integer values only.
+//! * Enable `binary-system` feature to display in binary prefix system (e.g. `1kiB/s` instead of `8.192kbps`)
 
 use std::error::Error as StdError;
 use std::fmt;
 use std::str::Chars;
 
+#[cfg(feature = "binary-system")]
+pub mod binary_system;
 #[cfg(feature = "serde")]
 pub mod option;
 #[cfg(feature = "serde")]
