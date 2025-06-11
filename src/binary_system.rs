@@ -1,4 +1,5 @@
-//! Module to allow the display of bandwidth in binary prefix system
+//! Module to allow the display of bandwidth in
+//! [binary prefix system](https://en.wikipedia.org/wiki/Binary_prefix)
 //!
 //! # Example
 //!
@@ -23,6 +24,7 @@ use crate::{item, Error, OverflowOp, Parser};
 #[derive(Debug, Clone)]
 pub struct FormattedBinaryBandwidth(Bandwidth);
 
+/// Convert the fractionnal part of a binary prefix value to the right amount of Bytes per second
 fn parse_binary_fraction(fraction: u64, fraction_cnt: u32, factore: u64) -> u64 {
     let fraction: f64 = fraction as f64 / (10u64.pow(fraction_cnt)) as f64;
     (fraction * factore as f64).round() as u64
@@ -147,16 +149,17 @@ impl Parser<'_> {
 
 /// Parse bandwidth object `1GiBps 12MiBps 5Bps` or `1.012000005GiBps`
 ///
-/// Unlike [`parse_bandwidth`](super::parse_bandwidth), this method expect bandwidth to be written in binary prefix system
+/// Unlike [`parse_bandwidth`](super::parse_bandwidth), this method expect bandwidth to
+/// be written in [binary prefix system](https://en.wikipedia.org/wiki/Binary_prefix)
 ///
 /// The bandwidth object is a concatenation of rate spans. Where each rate
 /// span is an number and a suffix. Supported suffixes:
 ///
 /// * `Bps`, `Byte/s`, `B/s` -- Byte per second
-/// * `kiBps`, `kiByte/s`, `kiB/s` -- kiloiByte per second
-/// * `MiBps`, `MiByte/s`, `MiB/s` -- megaiByte per second
-/// * `GiBps`, `GiByte/s`, `GiB/s` -- gigaiByte per second
-/// * `TiBps`, `TiByte/s`, `TiB/s` -- teraiByte per second
+/// * `kiBps`, `kiByte/s`, `kiB/s` -- kibiByte per second
+/// * `MiBps`, `MiByte/s`, `MiB/s` -- mebiByte per second
+/// * `GiBps`, `GiByte/s`, `GiB/s` -- gibiByte per second
+/// * `TiBps`, `TiByte/s`, `TiB/s` -- tebiByte per second
 ///
 /// While the number can be integer or decimal, the fractional part less than 1Bps will always be
 /// rounded to the closest (ties away from zero).
@@ -169,9 +172,11 @@ impl Parser<'_> {
 ///
 /// assert_eq!(parse_binary_bandwidth("9TiBps 420GiBps"), Ok(Bandwidth::new(82772, 609728512)));
 /// assert_eq!(parse_binary_bandwidth("4MiBps"), Ok(Bandwidth::new(0, 4 * 8 * 1024 * 1024)));
-/// assert_eq!(parse_binary_bandwidth("150.024kiBps"), Ok(Bandwidth::new(0, (150.024 * 1024_f64).round() as u32 * 8)));
+/// assert_eq!(parse_binary_bandwidth("150.024kiBps"),
+///            Ok(Bandwidth::new(0, (150.024 * 1024_f64).round() as u32 * 8)));
 /// // The fractional part less than 1Bps will always be ignored
-/// assert_eq!(parse_binary_bandwidth("150.02456kiBps"), Ok(Bandwidth::new(0, (150.02456 * 1024_f64).round() as u32 * 8)));
+/// assert_eq!(parse_binary_bandwidth("150.02456kiBps"),
+///            Ok(Bandwidth::new(0, (150.02456 * 1024_f64).round() as u32 * 8)));
 /// ```
 pub fn parse_binary_bandwidth(s: &str) -> Result<Bandwidth, Error> {
     Parser {
@@ -339,6 +344,7 @@ impl FormattedBinaryBandwidth {
         let mut reminder = (reminder * 1000_u64.pow(index as u32) as f64).round() as u64;
         eprintln!("{value}: {zeros}, {reminder}");
         if let Some(precision) = f.precision() {
+            // Rounding with ties to even to match the precision requested
             let mut rounding_direction = 0;
             while precision < zeros {
                 let loss = reminder % 10;

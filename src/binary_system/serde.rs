@@ -1,4 +1,5 @@
-//! Serde support for humanized bandwidth in binary prefix format.
+//! Serde support for humanized bandwidth in
+//! [binary prefix format](https://en.wikipedia.org/wiki/Binary_prefix).
 //!
 //! # Example
 //! ```
