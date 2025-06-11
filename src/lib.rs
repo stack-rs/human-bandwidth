@@ -11,9 +11,7 @@
 //! * Enable `display-integer` feature to display integer values only.
 //! * Enable `binary-system` feature to display in binary prefix system (e.g. `1kiB/s` instead of `8.192kbps`)
 
-use std::error::Error as StdError;
-use std::fmt;
-use std::str::Chars;
+use std::{error::Error as StdError, fmt, str::Chars};
 
 #[cfg(feature = "binary-system")]
 pub mod binary_system;
@@ -66,6 +64,24 @@ pub enum Error {
         /// A number associated with the unit
         value: u64,
     },
+    #[cfg(feature = "binary-system")]
+    /// Unit in the number is not one of allowed units (in the binary prefix system)
+    ///
+    /// See documentation of `parse_binary_bandwidth` for the list of supported
+    /// bandwidth units.
+    ///
+    /// The two fields are start and end (exclusive) of the slice from
+    /// the original string, containing erroneous value
+    UnknownBinaryUnit {
+        /// Start of the invalid unit inside the original string
+        start: usize,
+        /// End of the invalid unit inside the original string
+        end: usize,
+        /// The unit verbatim
+        unit: String,
+        /// A number associated with the unit
+        value: u64,
+    },
     /// The numeric value is too large
     ///
     /// Usually this means value is too large to be useful.
@@ -93,6 +109,23 @@ impl fmt::Display for Error {
                     f,
                     "unknown bandwidth unit {:?}, \
                     supported units: bps, kbps, Mbps, Gbps, Tbps",
+                    unit
+                )
+            }
+            #[cfg(feature = "binary-system")]
+            Error::UnknownBinaryUnit { unit, value, .. } if unit.is_empty() => {
+                write!(
+                    f,
+                    "binary bandwidth unit needed, for example {0}MiB/s or {0}B/s",
+                    value,
+                )
+            }
+            #[cfg(feature = "binary-system")]
+            Error::UnknownBinaryUnit { unit, .. } => {
+                write!(
+                    f,
+                    "unknown binary bandwidth unit {:?}, \
+                    supported units: B/s, kiB/s, MiB/s, GiB/s, TiB/s",
                     unit
                 )
             }
