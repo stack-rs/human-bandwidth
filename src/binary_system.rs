@@ -247,11 +247,6 @@ impl fmt::Display for LargestBinaryUnit {
 }
 
 impl FormattedBinaryBandwidth {
-    /// Returns a reference to the [`Bandwidth`] that is being formatted.
-    pub fn get_ref(&self) -> &Bandwidth {
-        &self.0
-    }
-
     /// Enabling the `display-integer` feature will display integer values only
     ///
     /// This method is preserved for backward compatibility and custom formatting.
@@ -413,6 +408,20 @@ impl fmt::Display for FormattedBinaryBandwidth {
         #[cfg(feature = "display-integer")]
         self.fmt_integer(f)?;
         Ok(())
+    }
+}
+
+impl core::ops::Deref for FormattedBinaryBandwidth {
+    type Target = Bandwidth;
+
+    fn deref(&self) -> &Bandwidth {
+        &self.0
+    }
+}
+
+impl core::ops::DerefMut for FormattedBinaryBandwidth {
+    fn deref_mut(&mut self) -> &mut Bandwidth {
+        &mut self.0
     }
 }
 

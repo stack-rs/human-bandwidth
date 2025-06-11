@@ -414,6 +414,7 @@ impl fmt::Display for LargestUnit {
 }
 
 impl FormattedBandwidth {
+    #[deprecated(since = "0.1.4", note = "please use `core::ops::Deref` instead")]
     /// Returns a reference to the [`Bandwidth`][] that is being formatted.
     pub fn get_ref(&self) -> &Bandwidth {
         &self.0
@@ -524,6 +525,20 @@ impl fmt::Display for FormattedBandwidth {
         #[cfg(feature = "display-integer")]
         self.fmt_integer(f)?;
         Ok(())
+    }
+}
+
+impl core::ops::Deref for FormattedBandwidth {
+    type Target = Bandwidth;
+
+    fn deref(&self) -> &Bandwidth {
+        &self.0
+    }
+}
+
+impl core::ops::DerefMut for FormattedBandwidth {
+    fn deref_mut(&mut self) -> &mut Bandwidth {
+        &mut self.0
     }
 }
 
