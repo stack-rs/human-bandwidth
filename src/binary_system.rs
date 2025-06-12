@@ -1,6 +1,18 @@
 //! Module to allow the display of bandwidth in
 //! [binary prefix system](https://en.wikipedia.org/wiki/Binary_prefix)
 //!
+//! # Conversion
+//!
+//! Unlike the international system, the binary system uses powers of 2 instead of powers of 10.
+//! More over the base unit here is [Byte](https://en.wikipedia.org/wiki/Byte) (or octet)
+//! per second and not bit per second, for reminder 1 Byte = 8 bits.
+//!
+//! Examples:
+//!
+//! * `1B/s` is equal to `8bps`
+//! * `1kiB/s` is equal to `8.192kbps`
+//! * `1MiBps` is equal to `8.388_608kbps`
+//!
 //! # Example
 //!
 //! ```
@@ -24,10 +36,24 @@ use crate::{item, Error, OverflowOp, Parser};
 #[derive(Debug, Clone)]
 pub struct FormattedBinaryBandwidth(Bandwidth);
 
+impl OverflowOp for u128 {
+    fn mul(self, other: Self) -> Result<Self, Error> {
+        self.checked_mul(other).ok_or(Error::NumberOverflow)
+    }
+    fn add(self, other: Self) -> Result<Self, Error> {
+        self.checked_add(other).ok_or(Error::NumberOverflow)
+    }
+}
+
 /// Convert the fractionnal part of a binary prefix value to the right amount of Bytes per second
-fn parse_binary_fraction(fraction: u64, fraction_cnt: u32, factore: u64) -> u64 {
-    let fraction: f64 = fraction as f64 / (10u64.pow(fraction_cnt)) as f64;
-    (fraction * factore as f64).round() as u64
+///
+/// The rounding is to the nearest with ties away from 0
+fn parse_binary_fraction(fraction: u64, fraction_cnt: u32, unit: u32) -> Result<u64, Error> {
+    let rounding = 10_u128.pow(fraction_cnt) >> 1;
+    let fraction = (fraction as u128)
+        .checked_shl(10 * unit)
+        .ok_or(Error::NumberOverflow)?;
+    Ok(((fraction + rounding) / 10u128.pow(fraction_cnt)) as u64)
 }
 
 impl Parser<'_> {
@@ -39,16 +65,16 @@ impl Parser<'_> {
         start: usize,
         end: usize,
     ) -> Result<(), Error> {
-        let factore = match &self.src[start..end] {
-            "Bps" | "Byte/s" | "B/s" | "ops" | "o/s" => 1,
+        let unit = match &self.src[start..end] {
+            "Bps" | "Byte/s" | "B/s" | "ops" | "o/s" => 0,
             "kiBps" | "KiBps" | "kiByte/s" | "KiByte/s" | "kiB/s" | "KiB/s" | "kiops" | "Kiops"
-            | "kio/s" | "Kio/s" => 1024,
+            | "kio/s" | "Kio/s" => 1,
             "MiBps" | "miBps" | "MiByte/s" | "miByte/s" | "MiB/s" | "miB/s" | "Miops" | "miops"
-            | "Mio/s" | "mio/s" => 1024 * 1024,
+            | "Mio/s" | "mio/s" => 2,
             "GiBps" | "giBps" | "GiByte/s" | "giByte/s" | "GiB/s" | "giB/s" | "Giops" | "giops"
-            | "Gio/s" | "gio/s" => 1024_u64.pow(3),
+            | "Gio/s" | "gio/s" => 3,
             "TiBps" | "tiBps" | "TiByte/s" | "tiByte/s" | "TiB/s" | "tiB/s" | "Tiops" | "tiops"
-            | "Tio/s" | "tio/s" => 1024_u64.pow(4),
+            | "Tio/s" | "tio/s" => 4,
             _ => {
                 return Err(Error::UnknownBinaryUnit {
                     start,
@@ -58,18 +84,19 @@ impl Parser<'_> {
                 });
             }
         };
-        let bps = n
-            .mul(factore)?
-            .add(parse_binary_fraction(fraction, fraction_cnt, factore))?
-            .mul(8)?;
-        let (mut gbps, bps) = (bps / 1_000_000_000, bps % 1_000_000_000);
-        let mut bps = self.current.1.add(bps)?;
-        if bps > 1_000_000_000 {
-            gbps = gbps.add(bps / 1_000_000_000)?;
-            bps %= 1_000_000_000;
-        }
-        gbps = self.current.0.add(gbps)?;
-        self.current = (gbps, bps);
+        let bps = (n as u128)
+            .checked_shl(unit * 10)
+            .ok_or(Error::NumberOverflow)? // Converting the unit to Byte per second
+            .add(parse_binary_fraction(fraction, fraction_cnt, unit)? as u128)? // Adding the fractional part
+            .mul(8)?; // Converting to bit per second
+        let (gbps, bps) = ((bps / 1_000_000_000), (bps % 1_000_000_000) as u32);
+        let gbps = if gbps > u64::MAX as u128 {
+            return Err(Error::NumberOverflow);
+        } else {
+            gbps as u64
+        };
+        let new_bandwidth = Bandwidth::new(gbps, bps);
+        self.current += new_bandwidth;
         Ok(())
     }
 
@@ -100,6 +127,7 @@ impl Parser<'_> {
                         }
                     }
                     c if c.is_whitespace() => {}
+                    '_' => {}
                     '.' => {
                         if decimal {
                             return Err(Error::InvalidCharacter(off));
@@ -138,7 +166,7 @@ impl Parser<'_> {
             self.parse_binary_unit(n, fraction, fraction_cnt, start, off)?;
             n = match self.parse_first_char()? {
                 Some(n) => n,
-                None => return Ok(Bandwidth::new(self.current.0, self.current.1 as u32)),
+                None => return Ok(self.current),
             };
             fraction = 0;
             decimal = false;
@@ -155,11 +183,11 @@ impl Parser<'_> {
 /// The bandwidth object is a concatenation of rate spans. Where each rate
 /// span is an number and a suffix. Supported suffixes:
 ///
-/// * `Bps`, `Byte/s`, `B/s` -- Byte per second
-/// * `kiBps`, `kiByte/s`, `kiB/s` -- kibiByte per second
-/// * `MiBps`, `MiByte/s`, `MiB/s` -- mebiByte per second
-/// * `GiBps`, `GiByte/s`, `GiB/s` -- gibiByte per second
-/// * `TiBps`, `TiByte/s`, `TiB/s` -- tebiByte per second
+/// * `Bps`, `Byte/s`, `B/s`, `ops`, 'o/s` -- Byte per second
+/// * `kiBps`, `kiByte/s`, `kiB/s`, `kiops`, 'kio/s` -- kibiByte per second
+/// * `MiBps`, `MiByte/s`, `MiB/s`, `Miops`, 'Mio/s` -- mebiByte per second
+/// * `GiBps`, `GiByte/s`, `GiB/s`, `Giops`, 'Gio/s` -- gibiByte per second
+/// * `TiBps`, `TiByte/s`, `TiB/s`, `Tiops`, 'Tio/s` -- tebiByte per second
 ///
 /// While the number can be integer or decimal, the fractional part less than 1Bps will always be
 /// rounded to the closest (ties away from zero).
@@ -179,19 +207,16 @@ impl Parser<'_> {
 ///            Ok(Bandwidth::new(0, (150.02456 * 1024_f64).round() as u32 * 8)));
 /// ```
 pub fn parse_binary_bandwidth(s: &str) -> Result<Bandwidth, Error> {
-    Parser {
-        iter: s.chars(),
-        src: s,
-        current: (0, 0),
-    }
-    .parse_binary()
+    Parser::new(s).parse_binary()
 }
 
 /// Formats bandwidth into a human-readable string using the binary prefix system
 ///
 /// Note: this format is NOT guaranteed to have same value when using
 /// parse_binary_bandwidth, the decimal part may varie du to the conversion
-/// between binary system and decimal system
+/// between binary system and decimal system.
+/// Especially because rounding are tie to even when printing but tie to highest when reading
+///
 ///
 /// By default it will format the value with the largest possible unit in decimal form.
 /// If you want to display integer values only, enable the `display-integer` feature.
@@ -335,9 +360,13 @@ impl FormattedBinaryBandwidth {
             i -= 1;
         }
         let mut zeros = index * 3;
-        let reminder = reminder as f64 / 1024_u64.pow(index as u32) as f64;
-        let mut reminder = (reminder * 1000_u64.pow(index as u32) as f64).round() as u64;
-        eprintln!("{value}: {zeros}, {reminder}");
+        let reminder = (reminder as u128) * 1000_u128.pow(index as u32);
+        let rounding = if index == 0 { 0 } else { 1 << (index * 10 - 1) };
+        let loss = reminder % (1 << (index * 10));
+        let mut reminder = (reminder + rounding) >> (index * 10);
+        if loss == rounding && reminder % 2 == 1 {
+            reminder -= 1;
+        }
         if let Some(precision) = f.precision() {
             // Rounding with ties to even to match the precision requested
             let mut rounding_direction = 0;
@@ -392,7 +421,6 @@ impl FormattedBinaryBandwidth {
         } else {
             zeros = 0;
         }
-        eprintln!("{value}: {zeros}, {reminder}");
         write!(f, "{value}")?;
         if zeros != 0 || reminder != 0 {
             write!(f, ".{reminder:0zeros$}", zeros = zeros)?;
@@ -806,26 +834,34 @@ mod tests {
 
     #[test]
     fn test_overflow() {
+        // The overflow arrives du to the limits of u64 to read the number, not during the conversion to bandwidth
         assert_eq!(
-            parse_binary_bandwidth("100000000000000000000Bps"),
+            parse_binary_bandwidth("100_000_000_000_000_000_000Bps"),
             Err(Error::NumberOverflow)
         );
+        assert!(parse_binary_bandwidth("10_000_000_000_000_000_000Bps").is_ok());
         assert_eq!(
-            parse_binary_bandwidth("100000000000000000kiBps"),
+            parse_binary_bandwidth("100_000_000_000_000_000_000kiBps"),
             Err(Error::NumberOverflow)
         );
+        assert!(parse_binary_bandwidth("10_000_000_000_000_000_000kiBps").is_ok());
         assert_eq!(
-            parse_binary_bandwidth("100000000000000MiBps"),
+            parse_binary_bandwidth("100_000_000_000_000_000_000MiBps"),
             Err(Error::NumberOverflow)
         );
+        assert!(parse_binary_bandwidth("10_000_000_000_000_000_000MiBps").is_ok());
+
+        // For GiBps and TiBps, the overflow arrive for smaller number du to the multiplication by 8 (for B/s to bps)
         assert_eq!(
-            parse_binary_bandwidth("100000000000000000000GiBps"),
+            parse_binary_bandwidth("10_000_000_000_000_000_000GiBps"),
             Err(Error::NumberOverflow)
         );
+        assert!(parse_binary_bandwidth("1_000_000_000_000_000_000GiBps").is_ok());
         assert_eq!(
-            parse_binary_bandwidth("10000000000000000000TiBps"),
+            parse_binary_bandwidth("10_000_000_000_000_000TiBps"),
             Err(Error::NumberOverflow)
         );
+        assert!(parse_binary_bandwidth("1_000_000_000_000_000TiBps").is_ok());
     }
 
     #[test]
@@ -1020,7 +1056,6 @@ mod tests {
             ),
         ];
         for precision in 0..7 {
-            println!("{precision}");
             for (bandwidth, int, fract, unit, max_precision) in bandwidths.iter() {
                 let bandwidth = TestDecimal::from(format_binary_bandwidth(*bandwidth));
                 let pow = 10_u64.pow((max_precision - precision.min(*max_precision)) as u32);
@@ -1033,8 +1068,6 @@ mod tests {
                 } else {
                     *fract
                 };
-                println!("{fract}");
-                println!("{int}.{fract}");
                 if precision != 0 && *max_precision != 0 {
                     assert_eq!(
                         format!("{bandwidth:.precision$}"),

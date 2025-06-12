@@ -164,7 +164,17 @@ fn parse_fraction(fraction: u64, fraction_cnt: u32, need_digit: u32) -> u64 {
 struct Parser<'a> {
     iter: Chars<'a>,
     src: &'a str,
-    current: (u64, u64),
+    current: Bandwidth,
+}
+
+impl<'a> Parser<'a> {
+    fn new<'b: 'a>(s: &'b str) -> Self {
+        Parser {
+            iter: s.chars(),
+            src: s,
+            current: Bandwidth::new(0, 0),
+        }
+    }
 }
 
 impl Parser<'_> {
@@ -196,7 +206,7 @@ impl Parser<'_> {
         start: usize,
         end: usize,
     ) -> Result<(), Error> {
-        let (mut gbps, bps) = match &self.src[start..end] {
+        let (gbps, bps) = match &self.src[start..end] {
             "bps" | "bit/s" | "b/s" => (0u64, n),
             "kbps" | "Kbps" | "kbit/s" | "Kbit/s" | "kb/s" | "Kb/s" => (
                 0u64,
@@ -224,13 +234,12 @@ impl Parser<'_> {
                 });
             }
         };
-        let mut bps = self.current.1.add(bps)?;
-        if bps > 1_000_000_000 {
-            gbps = gbps.add(bps / 1_000_000_000)?;
-            bps %= 1_000_000_000;
-        }
-        gbps = self.current.0.add(gbps)?;
-        self.current = (gbps, bps);
+        let (gbps, bps) = (gbps + (bps / 1_000_000_000), (bps % 1_000_000_000) as u32);
+        let new_bandwidth = Bandwidth::new(gbps, bps);
+        self.current = self
+            .current
+            .checked_add(new_bandwidth)
+            .ok_or(Error::NumberOverflow)?;
         Ok(())
     }
 
@@ -261,6 +270,7 @@ impl Parser<'_> {
                         }
                     }
                     c if c.is_whitespace() => {}
+                    '_' => {}
                     '.' => {
                         if decimal {
                             return Err(Error::InvalidCharacter(off));
@@ -299,7 +309,7 @@ impl Parser<'_> {
             self.parse_unit(n, fraction, fraction_cnt, start, off)?;
             n = match self.parse_first_char()? {
                 Some(n) => n,
-                None => return Ok(Bandwidth::new(self.current.0, self.current.1 as u32)),
+                None => return Ok(self.current),
             };
             fraction = 0;
             decimal = false;
@@ -335,12 +345,7 @@ impl Parser<'_> {
 /// assert_eq!(parse_bandwidth("150.02456kbps"), Ok(Bandwidth::new(0, 150_024)));
 /// ```
 pub fn parse_bandwidth(s: &str) -> Result<Bandwidth, Error> {
-    Parser {
-        iter: s.chars(),
-        src: s,
-        current: (0, 0),
-    }
-    .parse()
+    Parser::new(s).parse()
 }
 
 /// Formats bandwidth into a human-readable string
