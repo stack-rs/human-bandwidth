@@ -9,11 +9,12 @@
 //!
 //! * Enable `serde` feature for serde integration.
 //! * Enable `display-integer` feature to display integer values only.
+//! * Enable `binary-system` feature to display in binary prefix system (e.g. `1kiB/s` instead of `8.192kbps`)
 
-use std::error::Error as StdError;
-use std::fmt;
-use std::str::Chars;
+use std::{error::Error as StdError, fmt, str::Chars};
 
+#[cfg(feature = "binary-system")]
+pub mod binary_system;
 #[cfg(feature = "serde")]
 pub mod option;
 #[cfg(feature = "serde")]
@@ -63,6 +64,24 @@ pub enum Error {
         /// A number associated with the unit
         value: u64,
     },
+    #[cfg(feature = "binary-system")]
+    /// Unit in the number is not one of allowed units (in the binary prefix system)
+    ///
+    /// See documentation of `parse_binary_bandwidth` for the list of supported
+    /// bandwidth units.
+    ///
+    /// The two fields are start and end (exclusive) of the slice from
+    /// the original string, containing erroneous value
+    UnknownBinaryUnit {
+        /// Start of the invalid unit inside the original string
+        start: usize,
+        /// End of the invalid unit inside the original string
+        end: usize,
+        /// The unit verbatim
+        unit: String,
+        /// A number associated with the unit
+        value: u64,
+    },
     /// The numeric value is too large
     ///
     /// Usually this means value is too large to be useful.
@@ -90,6 +109,23 @@ impl fmt::Display for Error {
                     f,
                     "unknown bandwidth unit {:?}, \
                     supported units: bps, kbps, Mbps, Gbps, Tbps",
+                    unit
+                )
+            }
+            #[cfg(feature = "binary-system")]
+            Error::UnknownBinaryUnit { unit, value, .. } if unit.is_empty() => {
+                write!(
+                    f,
+                    "binary bandwidth unit needed, for example {0}MiB/s or {0}B/s",
+                    value,
+                )
+            }
+            #[cfg(feature = "binary-system")]
+            Error::UnknownBinaryUnit { unit, .. } => {
+                write!(
+                    f,
+                    "unknown binary bandwidth unit {:?}, \
+                    supported units: B/s, kiB/s, MiB/s, GiB/s, TiB/s",
                     unit
                 )
             }
@@ -128,7 +164,17 @@ fn parse_fraction(fraction: u64, fraction_cnt: u32, need_digit: u32) -> u64 {
 struct Parser<'a> {
     iter: Chars<'a>,
     src: &'a str,
-    current: (u64, u64),
+    current: Bandwidth,
+}
+
+impl<'a> Parser<'a> {
+    fn new<'b: 'a>(s: &'b str) -> Self {
+        Parser {
+            iter: s.chars(),
+            src: s,
+            current: Bandwidth::new(0, 0),
+        }
+    }
 }
 
 impl Parser<'_> {
@@ -160,7 +206,7 @@ impl Parser<'_> {
         start: usize,
         end: usize,
     ) -> Result<(), Error> {
-        let (mut gbps, bps) = match &self.src[start..end] {
+        let (gbps, bps) = match &self.src[start..end] {
             "bps" | "bit/s" | "b/s" => (0u64, n),
             "kbps" | "Kbps" | "kbit/s" | "Kbit/s" | "kb/s" | "Kb/s" => (
                 0u64,
@@ -188,13 +234,12 @@ impl Parser<'_> {
                 });
             }
         };
-        let mut bps = self.current.1.add(bps)?;
-        if bps > 1_000_000_000 {
-            gbps = gbps.add(bps / 1_000_000_000)?;
-            bps %= 1_000_000_000;
-        }
-        gbps = self.current.0.add(gbps)?;
-        self.current = (gbps, bps);
+        let (gbps, bps) = (gbps + (bps / 1_000_000_000), (bps % 1_000_000_000) as u32);
+        let new_bandwidth = Bandwidth::new(gbps, bps);
+        self.current = self
+            .current
+            .checked_add(new_bandwidth)
+            .ok_or(Error::NumberOverflow)?;
         Ok(())
     }
 
@@ -225,6 +270,7 @@ impl Parser<'_> {
                         }
                     }
                     c if c.is_whitespace() => {}
+                    '_' => {}
                     '.' => {
                         if decimal {
                             return Err(Error::InvalidCharacter(off));
@@ -263,7 +309,7 @@ impl Parser<'_> {
             self.parse_unit(n, fraction, fraction_cnt, start, off)?;
             n = match self.parse_first_char()? {
                 Some(n) => n,
-                None => return Ok(Bandwidth::new(self.current.0, self.current.1 as u32)),
+                None => return Ok(self.current),
             };
             fraction = 0;
             decimal = false;
@@ -299,12 +345,7 @@ impl Parser<'_> {
 /// assert_eq!(parse_bandwidth("150.02456kbps"), Ok(Bandwidth::new(0, 150_024)));
 /// ```
 pub fn parse_bandwidth(s: &str) -> Result<Bandwidth, Error> {
-    Parser {
-        iter: s.chars(),
-        src: s,
-        current: (0, 0),
-    }
-    .parse()
+    Parser::new(s).parse()
 }
 
 /// Formats bandwidth into a human-readable string
@@ -378,6 +419,7 @@ impl fmt::Display for LargestUnit {
 }
 
 impl FormattedBandwidth {
+    #[deprecated(since = "0.1.4", note = "please use `core::ops::Deref` instead")]
     /// Returns a reference to the [`Bandwidth`][] that is being formatted.
     pub fn get_ref(&self) -> &Bandwidth {
         &self.0
@@ -488,6 +530,20 @@ impl fmt::Display for FormattedBandwidth {
         #[cfg(feature = "display-integer")]
         self.fmt_integer(f)?;
         Ok(())
+    }
+}
+
+impl core::ops::Deref for FormattedBandwidth {
+    type Target = Bandwidth;
+
+    fn deref(&self) -> &Bandwidth {
+        &self.0
+    }
+}
+
+impl core::ops::DerefMut for FormattedBandwidth {
+    fn deref_mut(&mut self) -> &mut Bandwidth {
+        &mut self.0
     }
 }
 
