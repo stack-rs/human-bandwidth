@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.2.0](https://github.com/stack-rs/human-bandwidth/compare/releases/tag/0.2.0) - 2025-06-12
+## [0.1.4](https://github.com/stack-rs/human-bandwidth/compare/releases/tag/0.1.4) - 2025-06-12
 
 ### Features
 
