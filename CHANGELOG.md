@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.5](https://github.com/stack-rs/human-bandwidth/compare/v0.1.4...v0.1.5) - 2026-10-20
+
+### Miscellaneous Tasks
+
+- *(release)* Tidy release-plz config and workflows - ([5c589a1](https://github.com/stack-rs/human-bandwidth/commit/5c589a1c5342f843fba30706239ccb654672edfe))
+
+
 ## [0.1.4](https://github.com/stack-rs/human-bandwidth/compare/releases/tag/0.1.4) - 2025-06-12
 
 ### Features
