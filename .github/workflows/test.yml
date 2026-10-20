@@ -2,17 +2,32 @@ name: Test
 
 on:
   push:
-# Allows you to run this workflow manually from the Actions tab
+    paths-ignore:
+      - "documents/**"
+      - "assets/**"
+  pull_request:
+    types: [ready_for_review, opened, synchronize, reopened]
+    paths-ignore:
+      - "documents/**"
+      - "assets/**"
+  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test-all-features:
     name: cargo test with all features
     runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name != github.repository
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install nextest
         uses: taiki-e/install-action@nextest
-      - run: cargo nextest run --profile ci --all-features --release
+      - run: cargo nextest run --profile ci --workspace --all-features
+      # nextest does not run doctests
+      - run: cargo test --doc --workspace --all-features
